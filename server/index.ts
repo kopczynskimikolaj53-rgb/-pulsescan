@@ -14,22 +14,15 @@ const distPath = path.resolve(__dirname, "../dist");
 
 app.use(express.json({ limit: "2mb" }));
 
-async function proxyToWorker(
-  req: express.Request,
-  res: express.Response
-) {
+async function proxyToWorker(req: express.Request, res: express.Response) {
   try {
-    const url = new URL(
-      req.originalUrl,
+    const workerUrl = new URL(
+      "/api" + req.path,
       `http://${req.headers.host || "localhost"}`
     );
-
-    if (req.baseUrl === "/api" && !url.pathname.startsWith("/api/")) {
-      url.pathname = "/api" + (url.pathname.startsWith("/") ? url.pathname : "/" + url.pathname);
-    }
+    workerUrl.search = new URL(req.originalUrl, "http://localhost").search;
 
     const headers = new Headers();
-
     for (const [key, value] of Object.entries(req.headers)) {
       if (typeof value === "string") {
         headers.set(key, value);
@@ -45,16 +38,11 @@ async function proxyToWorker(
       headers.set("content-type", "application/json");
     }
 
-    const workerUrl = new URL(url);
-  if (req.baseUrl === "/api" && workerUrl.pathname.startsWith("/")) {
-    workerUrl.pathname = "/api" + workerUrl.pathname;
-  }
-
-  const workerRequest = new Request(workerUrl, {
-    method: req.method,
-    headers,
-    body,
-  });
+    const workerRequest = new Request(workerUrl, {
+      method: req.method,
+      headers,
+      body,
+    });
 
     const workerResponse = await handle(
       workerRequest,
@@ -62,15 +50,11 @@ async function proxyToWorker(
     );
 
     res.status(workerResponse.status);
-
     workerResponse.headers.forEach((value, key) => {
       res.setHeader(key, value);
     });
 
-    const responseBody = Buffer.from(
-      await workerResponse.arrayBuffer()
-    );
-
+    const responseBody = Buffer.from(await workerResponse.arrayBuffer());
     res.send(responseBody);
   } catch (error) {
     console.error("Worker bridge error:", error);
