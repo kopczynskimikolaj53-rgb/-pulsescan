@@ -24,6 +24,10 @@ async function proxyToWorker(
       `http://${req.headers.host || "localhost"}`
     );
 
+    if (req.baseUrl === "/api" && !url.pathname.startsWith("/api/")) {
+      url.pathname = "/api" + (url.pathname.startsWith("/") ? url.pathname : "/" + url.pathname);
+    }
+
     const headers = new Headers();
 
     for (const [key, value] of Object.entries(req.headers)) {
@@ -41,11 +45,16 @@ async function proxyToWorker(
       headers.set("content-type", "application/json");
     }
 
-    const workerRequest = new Request(url, {
-      method: req.method,
-      headers,
-      body,
-    });
+    const workerUrl = new URL(url);
+  if (req.baseUrl === "/api" && workerUrl.pathname.startsWith("/")) {
+    workerUrl.pathname = "/api" + workerUrl.pathname;
+  }
+
+  const workerRequest = new Request(workerUrl, {
+    method: req.method,
+    headers,
+    body,
+  });
 
     const workerResponse = await handle(
       workerRequest,
