@@ -1,0 +1,9 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "pulsescan",
+  "main": "./worker/index.ts",
+  "compatibility_date": "2026-09-15",
+  "assets": { "not_found_handling": "single-page-application" },
+  "d1_databases":[{"binding":"DB","database_name":"pulsescan-db","database-id":"24fdfae1-f885-4cc1-8d3b-63ac36cf25ee"}],
+  "triggers": { "crons": ["*/5 * * * *"] }
+}
