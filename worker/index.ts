@@ -1,7 +1,6 @@
 type Env = {
   DB: D1Database;
   AI?: { run(model: string, input: Record<string, unknown>): Promise<any> };
-  APP_PASSWORD?: string;
   BOT_TICK_SECRET?: string;
   X_BEARER_TOKEN?: string;
   BIRDEYE_API_KEY?: string;
@@ -18,7 +17,6 @@ const MIN_LIQ = 6000;
 const MIN_VOL = 1200;
 const MIN_BUY_RATIO = 0.52;
 const MAX_MCAP = 1_000_000;
-const SESSION_TTL = 24 * 60 * 60 * 1000;
 
 function json(data: unknown, status = 200, headers: Record<string,string> = {}) {
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', ...headers } });
@@ -38,8 +36,6 @@ async function put(env: Env, table: string, data: any, id = crypto.randomUUID())
   return id;
 }
 async function remove(env: Env, id: string) { await env.DB.prepare('DELETE FROM pulsescan_records WHERE id=?').bind(id).run(); }
-async function auth(request: Request, env: Env) {return true; }
-function requireAuth(request: Request, env: Env) { return auth(request, env); }
 async function fetchJson(url:string, init?:RequestInit) {
   const r = await fetch(url, init);
   if (!r.ok) throw new Error(`upstream ${r.status}`);
@@ -114,7 +110,7 @@ async function managePositions(env:Env, market:Map<string,any>) {
     if(exit){p.status='CLOSED';p.exitPrice=price;p.closedAt=now;p.exitReason=exit;} await put(env,'paper_positions',p,p.id);
   }
 }
-async function paperCycle(env:Env) {
+export async function paperCycle(env:Env) {
   const scan=await scanTokens(env,120); const rows=await records(env,'paper_positions',100); const open=rows.filter(p=>p.status==='OPEN');
   const prices=await livePrices(open.map(p=>p.address)); const market=new Map<string,any>(); for(const t of scan.tokens)market.set(t.address,t); for(const [a,p] of prices)market.set(a,{...(market.get(a)||{}),priceUsd:p,address:a});
   await managePositions(env,market);
@@ -156,12 +152,10 @@ async function portfolio(env:Env){
   const realized=closed.reduce((a,p)=>a+Number(p.pnl||0),0), unreal=positions.reduce((a,p)=>a+Number(p.pnl||0),0), wins=closed.filter(p=>p.pnl>0),losses=closed.filter(p=>p.pnl<=0),grossWins=wins.reduce((a,p)=>a+p.pnl,0),grossLoss=Math.abs(losses.reduce((a,p)=>a+p.pnl,0)); const winRate=closed.length?wins.length/closed.length*100:null; const avgWin=wins.length?grossWins/wins.length:0,avgLoss=losses.length?grossLoss/losses.length:0,expectancy=closed.length?(winRate!/100)*avgWin-(1-winRate!/100)*avgLoss:0; let equity=PAPER_START_BALANCE,peak=equity,maxDD=0;for(const p of closed){equity+=Number(p.pnl||0);peak=Math.max(peak,equity);maxDD=Math.max(maxDD,(peak-equity)/peak*100);}
   return {startingBalance:PAPER_START_BALANCE,invested:open.reduce((a,p)=>a+p.usdSize,0),available:PAPER_START_BALANCE+realized-open.reduce((a,p)=>a+p.usdSize,0),equity:PAPER_START_BALANCE+realized+unreal,unrealizedPnl:unreal,realizedPnl:realized,positions,closedTrades:closed.slice(-50).reverse(),priceUpdatedAt:Date.now(),analytics:{avgWin,avgLoss,expectancy,grossWins,grossLosses,bestTrade:closed.length?[...closed].sort((a,b)=>b.pnl-a.pnl)[0]:null,worstTrade:closed.length?[...closed].sort((a,b)=>a.pnl-b.pnl)[0]:null,equityCurve:closed.slice(-60).map(p=>({at:p.closedAt,equity:0,pnl:p.pnl}))},strategy:{name:'Precision Momentum v5',minScore:MIN_SCORE,stopLossPct:'dynamic',stopLossRangePct:[-12,-6],takeProfitPct:null,breakEvenArmPct:12,trailArmPct:24,trailGivebackPct:9,maxHoldMinutes:PAPER_MAX_HOLD_MINUTES,adaptiveProfit:true,adaptiveProfitStartPct:20,closedTrades:closed.length,wins:wins.length,losses:losses.length,winRate,profitFactor:grossLoss?grossWins/grossLoss:grossWins?999:0,avgWin,avgLoss,expectancy,maxDrawdownPct:maxDD,sources:['On-chain','X','Google News'],features:['regime-aware scoring','1h/6h confirmation','breakout confirmation','volatility-adaptive stop','break-even protection','profit trailing','momentum reversal exit','time decay exit'],version:STRATEGY_VERSION}};
 }
-async function handle(request:Request,env:Env):Promise<Response>{
+export async function handle(request:Request,env:Env):Promise<Response>{
   const url=new URL(request.url); const path=url.pathname; const method=request.method;
   if(path==='/api/_healthcheck')return json({message:'Success',platform:'Cloudflare Workers'});
-  if(path==='/api/auth/status')return json({authenticated:await auth(request,env)});
-  if(path==='/api/auth/unlock'&&method==='POST'){const body:any=await request.json().catch(()=>({}));if(!env.APP_PASSWORD||body.password!==env.APP_PASSWORD)return json({error:'Invalid password'},401);const token=crypto.randomUUID()+crypto.randomUUID();await put(env,'app_gate',{session:token,expiresAt:Date.now()+SESSION_TTL},'app-gate');return json({ok:true},200,{ 'Set-Cookie':`pulsescan_session=${encodeURIComponent(token)}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL/1000}`});}
-  if(!(await requireAuth(request,env)))return json({error:'Unauthorized'},401);
+  
   if(path==='/api/tokens'){try{return json(await scanTokens(env,90));}catch(e:any){return json({error:'Live token feed unavailable',detail:e?.message},502);}}
   if(path==='/api/x-sniper'){const result=await xSniper(env);for(const e of result.events)await put(env,'x_sniper_events',e,`${e.tweetId}:${e.address}`);return json({enabled:true,updatedAt:Date.now(),...result,events:result.events});}
   if(path==='/api/shiba/reports')return json({reports:await records(env,'shiba_reports',20)});
