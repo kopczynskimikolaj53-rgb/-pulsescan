@@ -154,7 +154,7 @@ async function portfolio(env:Env){
 }
 export async function handle(request:Request,env:Env):Promise<Response>{
   const url=new URL(request.url); const path=url.pathname; const method=request.method;
-  if(path==='/api/_healthcheck')return json({message:'Success',platform:'Cloudflare Workers'});
+  if(path==='/api/health')return json({message:'Success',platform:'Cloudflare Workers'});
   
   if(path==='/api/tokens'){try{return json(await scanTokens(env,90));}catch(e:any){return json({error:'Live token feed unavailable',detail:e?.message},502);}}
   if(path==='/api/x-sniper'){const result=await xSniper(env);for(const e of result.events)await put(env,'x_sniper_events',e,`${e.tweetId}:${e.address}`);return json({enabled:true,updatedAt:Date.now(),...result,events:result.events});}
