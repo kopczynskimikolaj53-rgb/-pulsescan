@@ -14,26 +14,24 @@ function convertPlaceholders(sql: string) {
   let index = 0;
 
   return sql.replace(/\?/g, () => {
-    index++;
+    index += 1;
     return `$${index}`;
   });
 }
 
-function normalizeRows(rows: any[]) {
-  return rows.map((row) => {
-    if (
-      row &&
-      row.data !== undefined &&
-      typeof row.data !== "string"
-    ) {
-      return {
-        ...row,
-        data: JSON.stringify(row.data),
-      };
-    }
+function normalizeRow(row: any) {
+  if (
+    row &&
+    typeof row.data === "object" &&
+    row.data !== null
+  ) {
+    return {
+      ...row,
+      data: JSON.stringify(row.data),
+    };
+  }
 
-    return row;
-  });
+  return row;
 }
 
 function makeStatement(sql: string) {
@@ -47,22 +45,25 @@ function makeStatement(sql: string) {
     },
 
     async all<T = any>() {
-      const result = await pool.query(postgresSql, values);
+      const result = await pool.query(
+        postgresSql,
+        values
+      );
 
       return {
-        results: normalizeRows(result.rows) as T[],
+        results: result.rows.map(normalizeRow) as T[],
       };
     },
 
     async first<T = any>() {
-      const result = await pool.query(postgresSql, values);
+      const result = await pool.query(
+        postgresSql,
+        values
+      );
+
       const row = result.rows[0];
 
-      if (!row) {
-        return null;
-      }
-
-      return normalizeRows([row])[0] as T;
+      return (normalizeRow(row) as T) ?? null;
     },
 
     async run() {

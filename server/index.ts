@@ -2,65 +2,27 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { initDb } from "./db";
-import { makeRailwayEnv } from "./railway-env";
+import { initDb, makeRailwayEnv } from "./db";
 import { handle, paperCycle } from "../worker/index";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8080;
 
-app.use(express.json());
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const distPath = path.resolve(__dirname, "../dist");
 
-let tickRunning = false;
+app.use(express.json({ limit: "2mb" }));
 
-async function runBotTick() {
-  if (tickRunning) {
-    console.log("[SHIBA] Previous tick still running, skipping.");
-    return;
-  }
-
-  tickRunning = true;
-  const startedAt = Date.now();
-
+async function proxyToWorker(
+  req: express.Request,
+  res: express.Response
+) {
   try {
-    console.log("[SHIBA] Tick started");
-
-    const env = makeRailwayEnv() as any;
-    await paperCycle(env);
-
-    console.log(
-      `[SHIBA] Tick finished in ${Date.now() - startedAt}ms`
+    const url = new URL(
+      req.originalUrl,
+      `http://${req.headers.host || "localhost"}`
     );
-  } catch (error) {
-    console.error("[SHIBA] Tick failed:", error);
-  } finally {
-    tickRunning = false;
-  }
-}
-
-app.get("/api/health", (_req, res) => {
-  res.json({
-    ok: true,
-    service: "PulseScan",
-    platform: "Railway",
-    botIntervalSeconds: 30,
-    botRunning: tickRunning,
-  });
-});
-
-app.use("/api", async (req, res) => {
-  try {
-    const protocol =
-      req.headers["x-forwarded-proto"]?.toString() || "http";
-
-    const host =
-      req.headers.host || `localhost:${PORT}`;
-
-    const url = `${protocol}://${host}${req.originalUrl}`;
 
     const headers = new Headers();
 
@@ -68,69 +30,104 @@ app.use("/api", async (req, res) => {
       if (typeof value === "string") {
         headers.set(key, value);
       } else if (Array.isArray(value)) {
-        headers.set(key, value.join(", "));
+        headers.set(key, value.join(","));
       }
     }
 
-    const init: RequestInit = {
-      method: req.method,
-      headers,
-    };
+    let body: string | undefined;
 
-    if (
-      req.method !== "GET" &&
-      req.method !== "HEAD" &&
-      req.body !== undefined
-    ) {
-      init.body = JSON.stringify(req.body);
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      body = JSON.stringify(req.body ?? {});
       headers.set("content-type", "application/json");
     }
 
-    const request = new Request(url, init);
+    const workerRequest = new Request(url, {
+      method: req.method,
+      headers,
+      body,
+    });
 
     const workerResponse = await handle(
-      request,
+      workerRequest,
       makeRailwayEnv() as any
     );
 
-    const body = await workerResponse.text();
+    res.status(workerResponse.status);
 
     workerResponse.headers.forEach((value, key) => {
       res.setHeader(key, value);
     });
 
-    res.status(workerResponse.status).send(body);
-  } catch (error) {
-    console.error("[API] Request failed:", error);
+    const responseBody = Buffer.from(
+      await workerResponse.arrayBuffer()
+    );
 
+    res.send(responseBody);
+  } catch (error) {
+    console.error("Worker bridge error:", error);
     res.status(500).json({
-      error:
-        error instanceof Error
-          ? error.message
-          : String(error),
+      ok: false,
+      error: "Internal server error",
     });
   }
-});
+}
+
+app.use("/api", proxyToWorker);
 
 app.use(express.static(distPath));
 
-app.use((_req, res) => {
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api")) {
+    return next();
+  }
+
   res.sendFile(path.join(distPath, "index.html"));
 });
 
+let tickRunning = false;
+
+async function runTick() {
+  if (tickRunning) {
+    console.log("Paper bot tick skipped: previous tick still running");
+    return;
+  }
+
+  tickRunning = true;
+  const started = Date.now();
+
+  try {
+    await paperCycle(makeRailwayEnv() as any);
+    console.log(
+      `Paper bot tick completed in ${Date.now() - started}ms`
+    );
+  } catch (error) {
+    console.error("Paper bot tick failed:", error);
+  } finally {
+    tickRunning = false;
+  }
+}
+
 async function start() {
-  await initDb();
+  if (process.env.DATABASE_URL) {
+    await initDb();
+  } else {
+    console.warn("DATABASE_URL missing");
+  }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`PulseScan server running on port ${PORT}`);
-    console.log("Shiba bot interval: 30 seconds");
+    console.log(`PulseScan Railway server running on port ${PORT}`);
   });
 
-  await runBotTick();
+  if (process.env.BOT_ENABLED === "true") {
+    setTimeout(() => void runTick(), 5000);
+    setInterval(() => void runTick(), 30000);
 
-  setInterval(() => {
-    void runBotTick();
-  }, 30_000);
+    console.log("Paper bot scheduler: 30 seconds");
+  } else {
+    console.log(
+      "Paper bot scheduler disabled (BOT_ENABLED != true)"
+    );
+  }
 }
 
 start().catch((error) => {
